@@ -18,6 +18,17 @@ jobs:
           bash tests/cli.sh ./build/filecrypt
           bash tests/memory_bound.sh ./build/filecrypt
           bash test.sh ./build/filecrypt
+          python3 benchmarks/run.py --binary smoke=build/filecrypt --output test-artifacts/benchmark-smoke --size-mib 8 --repeats 2
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test MSVC
+        run: |
+          cmake -S . -B build
+          cmake --build build --config Release --parallel 2
+          ctest --test-dir build -C Release --output-on-failure
   sanitizers:
     runs-on: ubuntu-22.04
     timeout-minutes: 20

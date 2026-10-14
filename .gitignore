@@ -5,3 +5,5 @@
 *.enc
 *.dec
 .filecrypt-*
+__pycache__/
+*.pyc

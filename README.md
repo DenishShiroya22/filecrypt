@@ -19,6 +19,8 @@ filecrypt/
 │   ├── chunk.hpp                 # Chunk ownership and EOF metadata
 │   ├── thread_safe_queue.hpp     # Bounded blocking queue with drain/cancel
 │   ├── in_flight_window.hpp      # Whole-pipeline memory budget
+│   ├── buffer_pool.hpp           # Bounded reusable payload storage
+│   ├── detail/runtime_hooks.hpp  # Deterministic test boundaries
 │   ├── thread_pool.hpp           # RAII thread ownership
 │   ├── crypto.hpp                # Immutable cipher interface and key loading
 │   ├── file_io.hpp               # Reader, ordered writer, output transaction
@@ -30,10 +32,13 @@ filecrypt/
 │   ├── file_io.cpp
 │   └── pipeline.cpp
 ├── tests/
-│   ├── tests.cpp                 # Eight unit/integration test groups
+│   ├── tests.cpp                 # Fourteen unit/integration test groups
 │   ├── cli.sh                    # CLI errors and real write-failure cancellation
+│   ├── large_file.py             # 11 GiB test with RSS/address-space limits
 │   └── memory_bound.sh           # Input larger than a process memory limit
 ├── test.sh                       # 50 MiB × 100 hash/byte-verified round trips
+├── benchmarks/run.py            # Repeated sequential/pipeline comparison
+├── docs/performance.md
 ├── docs/architecture.md
 ├── docs/validation.md
 └── .github/workflows/ci.yml       # Release, ASan/UBSan, and TSan jobs
@@ -76,6 +81,7 @@ Keys must be nonempty regular files of at most 1 MiB.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
+| `--engine pipeline\|sequential` | pipeline | Worker pipeline or truly single-threaded execution |
 | `--threads N` | hardware concurrency, or 1 | Number of crypto workers |
 | `--chunk-size BYTES` | 4194304 (4 MiB) | Maximum bytes in each chunk |
 | `--queue-capacity N` | 8 | Capacity of each of the two queues |
@@ -93,8 +99,8 @@ sizes. Decryption may use a different chunk size. Output contains only transform
 bytes; it has no header, key identifier, checksum, or authentication tag.
 
 Exit status: `0` success; `1` processing/I/O/resource failure; `2` invalid arguments.
-Summary output includes bytes, chunks, worker count, elapsed time, and observed
-peak in-flight and pending chunks. Existing outputs are always refused, including
+Summary output includes bytes, chunks, worker count, elapsed time, observed
+peak in-flight/pending chunks, payload buffer allocations, and queue push waits. Existing outputs are always refused, including
 symlinks and aliases of the input.
 
 ## Memory and throughput
@@ -106,11 +112,44 @@ the executable, and worker thread stacks. This is a payload bound, not a promise
 of a 64 MiB process RSS. Lower worker count when thread-stack overhead matters.
 
 Chunks move between containers; their payloads are transformed in place.
+The writer returns buffers to a bounded pool before returning admission credits.
+The pool keeps at most the in-flight limit of payload buffers, including idle
+buffers; it avoids repeated allocation and initialization during full reads.
 The sequential reader and writer each own their stream; workers only touch their
 own chunks and a shared immutable key. No full-file buffering or busy polling
 occurs. Tune chunk size/window against the storage device and memory budget.
 Hardware concurrency is the requested default; spawning many workers does not
 guarantee better throughput when storage or memory bandwidth is the bottleneck.
+
+## Sequential baseline and performance
+
+`--engine sequential` uses one reusable buffer and starts no worker, producer,
+or writer threads. A pipeline configured with `--threads 1` still has separate
+producer and consumer stages, so it is a different measurement.
+
+Both engines use identical chunk offset calculations, read checks, flush/close,
+staging permissions, and atomic publication. The sequential baseline ignores
+worker/queue/window tuning after validating their values.
+
+Linux benchmark and optional large-file validation (Python 3 and GNU time):
+
+```bash
+python3 benchmarks/run.py --binary current=build/filecrypt \
+  --output test-artifacts/benchmark --size-mib 512 --repeats 5
+python3 tests/large_file.py ./build/filecrypt --size-gib 11 \
+  --address-limit-mib 256 --temp-dir /tmp \
+  --output test-artifacts/large-file.json
+```
+
+The large test reserves space for full outputs, uses zero-filled input with random
+markers (sparse where supported), verifies hashes and exact bytes, and automatically removes fixtures.
+Use a native Linux filesystem for fixtures; Windows-mounted paths in WSL can
+add substantial I/O overhead. The temporary parent directory must exist. It is optional
+because it writes more than 22 GiB. Use a release build; sanitizer runtimes
+require large virtual address spaces.
+
+[Measured results and methodology](docs/performance.md) include raw repeated
+measurements, memory use, before/after buffer-reuse comparisons, and limitations.
 
 ## Sanitizers and stress tests
 

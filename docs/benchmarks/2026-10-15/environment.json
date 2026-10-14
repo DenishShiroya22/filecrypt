@@ -1,0 +1,29 @@
+{
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "cpu_count": 16,
+  "size_mib": 512,
+  "repeats": 5,
+  "cache_policy": "warm input; no cache dropping; buffered output without fsync",
+  "timing": "process launch through successful publication; hashing excluded",
+  "queue_capacity": 4,
+  "max_in_flight": 8,
+  "binaries": {
+    "before": {
+      "path": "/mnt/c/Users/denish/mcp_workspace/filecrypt/build-before/filecrypt",
+      "sha256": "5a9c819ca42cf8c2f3813edb937d3bab73fc377925fa617c90d1e42536e54219"
+    },
+    "pooled": {
+      "path": "/mnt/c/Users/denish/mcp_workspace/filecrypt/build-linux/filecrypt",
+      "sha256": "bf7d6e257bd9c1ce3d20d1d32e2819d943df5732cb8240552b937b371eb02123"
+    }
+  },
+  "fixture_sha256": "21600ef2b485619b7a16157e0f9fbbb85df355410f9a5ad55437530b58aa93a5",
+  "filesystem": "Filesystem     Type  1K-blocks    Used Available Use% Mounted on\n/dev/sdd       ext4 1055762868 9625904 992433492   1% /",
+  "memory": [
+    "MemTotal:        7739036 kB",
+    "MemFree:         5217976 kB",
+    "MemAvailable:    7048016 kB"
+  ],
+  "ciphertext_sha256": "00b149910a3df5017e26829bad87d8e63a16a2b31f2a2cc7c0396144036cf3e5",
+  "verified_runs": 150
+}

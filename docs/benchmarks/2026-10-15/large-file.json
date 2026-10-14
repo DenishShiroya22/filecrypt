@@ -1,0 +1,34 @@
+{
+  "bytes": 11811160187,
+  "address_limit_bytes": 268435456,
+  "host_ram_bytes": 7924772864,
+  "input_larger_than_host_ram": true,
+  "fixture": "zero-filled file with random 64 KiB markers at beginning, midpoint, end; sparse where supported",
+  "filesystem": "Filesystem     Type  1K-blocks    Used Available Use% Mounted on\n/dev/sdd       ext4 1055762868 9118416 992940980   1% /",
+  "engine": "pipeline",
+  "workers": 2,
+  "chunk_size": 4194304,
+  "max_in_flight": 4,
+  "runs": [
+    {
+      "mode": "encrypt",
+      "seconds": 91.55,
+      "peak_rss_kib": 20348,
+      "user_seconds": 21.73,
+      "system_seconds": 24.54,
+      "summary": "Processed 11811160187 bytes in 2817 chunks; workers=2; peak_in_flight=4; peak_reordered=4; engine=pipeline; buffer_allocations=4; task_push_waits=13; result_push_waits=1516; seconds=91.512732"
+    },
+    {
+      "mode": "decrypt",
+      "seconds": 26.28,
+      "peak_rss_kib": 20348,
+      "user_seconds": 20.87,
+      "system_seconds": 19.28,
+      "summary": "Processed 11811160187 bytes in 2817 chunks; workers=2; peak_in_flight=4; peak_reordered=3; engine=pipeline; buffer_allocations=4; task_push_waits=49; result_push_waits=267; seconds=26.194692"
+    }
+  ],
+  "input_allocated_bytes": 204800,
+  "input_sha256": "c78949c75208459bad1a8e3f011bfde733930f54505e60fa75c701d5b92f7711",
+  "recovered_sha256": "c78949c75208459bad1a8e3f011bfde733930f54505e60fa75c701d5b92f7711",
+  "verified": true
+}

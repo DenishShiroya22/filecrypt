@@ -1,7 +1,10 @@
-* text=auto
+* text=auto eol=lf
 *.sh text eol=lf
 *.cpp text eol=lf
 *.hpp text eol=lf
 *.md text eol=lf
 *.yml text eol=lf
+*.py text eol=lf
+*.csv text eol=lf
+*.json text eol=lf
 CMakeLists.txt text eol=lf

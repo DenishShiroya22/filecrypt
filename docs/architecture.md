@@ -9,17 +9,22 @@ flowchart LR
     W --> Q[Bounded result queue]
     Q --> B[Writer: pending map]
     B --> O[Sequential staged output]
-    O --> C[Return credit after freeing chunk]
+    O --> C[Recycle buffer then return credit]
     C --> R
 ```
 
 A chunk's vector has exactly one owner. The reader acquires a credit **before**
 allocating its vector. Ownership then moves to the task queue, one worker,
 the result queue, and finally the writer. The writer returns the credit only
-after writing the expected chunk and erasing its vector.
+after writing the expected chunk, returning its storage to the pool, and erasing
+its map entry. Idle buffers remain reusable rather than being freed.
 
 Let `L` be the in-flight limit and `C` be the chunk size. The sum of payload
-sizes held across all stages is at most `L × C`; it cannot grow with input size.
+storage retained across active chunks AND idle pooled buffers is at most `L × C`;
+it cannot grow with input size. The pool creates at most `L` vectors and never
+waits for a buffer. The reader can only take/create storage after acquiring a
+credit; the writer returns storage before releasing that credit. Thus a new
+admission always has reusable storage or room for another vector.
 The pending map is a subset of those same admitted chunks. Queue capacities
 bound each queue independently but do not, by themselves, bound a reorder map.
 
@@ -97,3 +102,20 @@ reusing keys reveals relations between plaintexts; arbitrary ciphertext changes
 produce corresponding plaintext changes. There is no authentication or
 wrong-key/corruption detection. This algorithm is deliberately limited to the
 baseline requested in the task.
+
+## Test boundaries and sequential reference
+
+The production entry point supplies no RuntimeHooks. The detail-only entry point
+runs the same orchestration and permits injected exceptions immediately before
+payload growth, a read, a transform, a write, or native thread creation. These
+are deterministic failure-boundary simulations, not claims of exhausting the
+OS thread allocator or hardware memory. Queue observers run under the queue
+mutex, must never wait for external events or re-enter, and let a test establish real queue saturation
+without sleeps or polling. The writer then throws while both queues have blocked
+producers, exercising the shared cancellation and join path.
+
+The sequential engine shares ChunkReader, RollingXor, and OutputTransaction.
+It retains a single chunk buffer and performs all stages on the calling thread.
+This is the benchmark baseline; one pipeline worker still runs with separate
+reader and writer stages. Push-wait counters count calls that encounter a full
+queue, not wait duration or condition-variable wakeups.

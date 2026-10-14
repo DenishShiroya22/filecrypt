@@ -8,8 +8,8 @@
 namespace filecrypt::detail {
 // Fault injection at real execution boundaries, used only by tests.
 // Chunk callbacks can run on different threads: captured shared state must be
-// synchronized. Queue observers run under the queue mutex, must not throw,
-// block, or re-enter a queue. The caller must keep hooks alive until return.
+// synchronized. Queue observers run under the queue mutex and must not throw,
+// wait for external events, or re-enter a queue. Hooks must outlive the call.
 struct RuntimeHooks {
     std::function<void(std::size_t)> before_allocate, before_read;
     std::function<void(std::size_t)> before_transform, before_write, before_launch;

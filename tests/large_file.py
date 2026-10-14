@@ -22,14 +22,14 @@ def main():
     size=args.size_gib*1024**3+123
     limit=args.address_limit_mib*1024**2
     parent=args.temp_dir or Path(tempfile.gettempdir())
-    if shutil.disk_usage(parent).free < 2*size+1024**3:
-        p.error("Need space for two dense outputs plus 1 GiB reserve")
+    if shutil.disk_usage(parent).free < 3*size+1024**3:
+        p.error("Need space for input, two dense outputs, and 1 GiB reserve")
     total_ram=int(next(x.split()[1] for x in Path("/proc/meminfo").read_text().splitlines()
                        if x.startswith("MemTotal:")))*1024
     def set_limit(): resource.setrlimit(resource.RLIMIT_AS,(limit,limit))
     report={"bytes":size,"address_limit_bytes":limit,"host_ram_bytes":total_ram,
             "input_larger_than_host_ram":size>total_ram,
-            "fixture":"sparse file with random 64 KiB markers at beginning, midpoint, end",
+            "fixture":"zero-filled file with random 64 KiB markers at beginning, midpoint, end; sparse where supported",
             "filesystem":subprocess.check_output(["df","-T",str(parent)],text=True).strip(),
             "engine":"pipeline","workers":2,"chunk_size":4194304,"max_in_flight":4,"runs":[]}
     with tempfile.TemporaryDirectory(prefix="filecrypt-large-",dir=parent) as temp:
@@ -39,12 +39,15 @@ def main():
             stream.truncate(size)
             for offset in (0,size//2,size-65536):
                 stream.seek(offset); stream.write(os.urandom(65536))
+        report["input_allocated_bytes"]=source.stat().st_blocks*512
+        print("Hashing input fixture",flush=True)
         report["input_sha256"]=digest(source)
         for mode,src,dst in (("encrypt",source,encrypted),("decrypt",encrypted,recovered)):
             stats=work/(mode+".time")
             command=["/usr/bin/time","-f","%e,%M,%U,%S","-o",str(stats),str(binary),
                      mode,str(src),str(dst),"--key-file",str(key),"--threads","2",
                      "--chunk-size","4194304","--queue-capacity","1","--max-in-flight","4"]
+            print("Starting "+mode,flush=True)
             result=subprocess.run(command,preexec_fn=set_limit,check=True,capture_output=True,
                                   text=True,timeout=1800)
             seconds,rss,user,system=stats.read_text().strip().split(",")
@@ -52,6 +55,7 @@ def main():
                                    "user_seconds":float(user),"system_seconds":float(system),
                                    "summary":result.stdout.strip()})
             print(mode,result.stdout.strip(),f"peak RSS={rss} KiB",flush=True)
+        print("Hashing recovered file",flush=True)
         report["recovered_sha256"]=digest(recovered)
         if report["recovered_sha256"] != report["input_sha256"]:
             raise RuntimeError("Large-file integrity failure")

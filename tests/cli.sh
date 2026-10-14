@@ -16,6 +16,8 @@ expect_exit() {
     fi
 }
 expect_exit 0 --help
+expect_exit 2 encrypt "$work/input with spaces.bin" "$work/out" --key-file "$work/key.bin" --engine invalid
+expect_exit 2 encrypt "$work/input with spaces.bin" "$work/out" --key-file "$work/key.bin" --engine pipeline --engine sequential
 expect_exit 2
 expect_exit 2 invalid "$work/input with spaces.bin" "$work/out" --key-file "$work/key.bin"
 expect_exit 2 encrypt "$work/input with spaces.bin" "$work/out" --key-file "$work/key.bin" --threads 0
@@ -33,6 +35,8 @@ expect_exit 1 encrypt "$work/input with spaces.bin" "$work/dangling" --key-file 
 expect_exit 0 encrypt "$work/input with spaces.bin" "$work/out" --key-file "$work/key.bin" --threads 2
 expect_exit 0 decrypt "$work/out" "$work/recovered" --key-file "$work/key.bin" --chunk-size 7 --threads 4
 cmp "$work/input with spaces.bin" "$work/recovered"
+expect_exit 0 encrypt "$work/input with spaces.bin" "$work/serial" --key-file "$work/key.bin" --engine sequential --chunk-size 3
+cmp "$work/out" "$work/serial"
 # Real output failure with active producer/workers. SIGXFSZ is ignored only in
 # this subprocess so writes report an error instead of killing the process.
 dd if=/dev/zero of="$work/large.bin" bs=1M count=8 status=none
