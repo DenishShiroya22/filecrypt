@@ -1,6 +1,7 @@
 #include "filecrypt/pipeline.hpp"
 #include "filecrypt/detail/runtime_hooks.hpp"
 #include "filecrypt/thread_pool.hpp"
+#include <algorithm>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -55,6 +56,10 @@ Stats run_pipeline(ChunkReader& reader, std::ostream& output,
     ThreadSafeQueue<Chunk> tasks(options.queue_capacity, hooks ? hooks->task_wait : nullptr);
     ThreadSafeQueue<Chunk> results(options.queue_capacity, hooks ? hooks->result_wait : nullptr);
     InFlightWindow window(options.max_in_flight);
+    const auto count = reader.size() == 0 ? 1 :
+        reader.size()/options.chunk_size + (reader.size()%options.chunk_size != 0 ? 1U : 0U);
+    BufferPool buffers(static_cast<std::size_t>(
+        std::min<std::uintmax_t>(count, options.max_in_flight)));
     std::mutex error_mutex, completion_mutex;
     std::exception_ptr first_error;
     std::size_t active_workers = options.workers;
@@ -89,10 +94,10 @@ Stats run_pipeline(ChunkReader& reader, std::ostream& output,
     try {
         workers = std::make_unique<ThreadPool>(options.workers, worker, fail, before_launch);
         producer = std::make_unique<ThreadPool>(1, [&] {
-            reader.produce(options.chunk_size, tasks, window, hooks);
+            reader.produce(options.chunk_size, tasks, window, hooks, &buffers);
         }, fail, before_launch);
         static_cast<WriteStats&>(stats) = write_sequential(
-            output, results, window, reader.size(), options.chunk_size, hooks);
+            output, results, window, reader.size(), options.chunk_size, hooks, &buffers);
     } catch (...) { fail(std::current_exception()); }
     if (producer) producer->join();
     if (workers) workers->join();

@@ -190,7 +190,7 @@ void pipeline_roundtrip() {
         const auto original = random_bytes(bytes);
         save(input, original);
         const auto stats = process_file(input, encrypted, cipher, Options{4096, 8, 1, 3});
-        require(stats.bytes == bytes && stats.peak_in_flight <= 3 && stats.peak_reordered <= 3,
+        require(stats.bytes == bytes && stats.peak_in_flight <= 3 && stats.peak_reordered <= 3 && stats.buffer_allocations <= 3,
                 "Pipeline violated integrity/memory limits");
         process_file(encrypted, decrypted, cipher, Options{8191, 2, 2, 1});
         require(read(decrypted) == original, "Different-partition round trip failed");

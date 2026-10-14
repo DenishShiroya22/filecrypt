@@ -1,5 +1,6 @@
 #pragma once
 #include "filecrypt/chunk.hpp"
+#include "filecrypt/buffer_pool.hpp"
 #include "filecrypt/in_flight_window.hpp"
 #include "filecrypt/thread_safe_queue.hpp"
 #include <filesystem>
@@ -15,7 +16,8 @@ public:
     bool read_next(Chunk& chunk, std::size_t chunk_size, detail::RuntimeHooks* hooks = nullptr);
     void verify_end();
     void produce(std::size_t chunk_size, ThreadSafeQueue<Chunk>& tasks,
-                 InFlightWindow& window, detail::RuntimeHooks* hooks = nullptr);
+                 InFlightWindow& window, detail::RuntimeHooks* hooks = nullptr,
+                 BufferPool* buffers = nullptr);
 private:
     std::ifstream stream_;
     const std::uintmax_t size_;
@@ -42,5 +44,6 @@ struct WriteStats {
 };
 WriteStats write_sequential(std::ostream& output, ThreadSafeQueue<Chunk>& results,
                             InFlightWindow& window, std::uintmax_t input_size,
-                            std::size_t chunk_size, detail::RuntimeHooks* hooks = nullptr);
+                            std::size_t chunk_size, detail::RuntimeHooks* hooks = nullptr,
+                            BufferPool* buffers = nullptr);
 } // namespace filecrypt

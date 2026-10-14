@@ -47,11 +47,12 @@ void ChunkReader::verify_end() {
         throw std::runtime_error("Read failed or input grew during processing");
 }
 void ChunkReader::produce(std::size_t chunk_size, ThreadSafeQueue<Chunk>& tasks,
-                          InFlightWindow& window, detail::RuntimeHooks* hooks) {
+                          InFlightWindow& window, detail::RuntimeHooks* hooks, BufferPool* buffers) {
     // Even an empty file emits one terminal chunk.
     while (!finished_) {
         if (!window.acquire()) return;
         Chunk chunk;
+        if (buffers) chunk.data = buffers->take();
         read_next(chunk, chunk_size, hooks);
         if (!tasks.push(std::move(chunk))) return;
     }
@@ -105,7 +106,7 @@ void OutputTransaction::commit() {
 }
 WriteStats write_sequential(std::ostream& output, ThreadSafeQueue<Chunk>& results,
                             InFlightWindow& window, std::uintmax_t input_size,
-                            std::size_t chunk_size, detail::RuntimeHooks* hooks) {
+                            std::size_t chunk_size, detail::RuntimeHooks* hooks, BufferPool* buffers) {
     const std::uintmax_t count64 = input_size == 0 ? 1 :
         input_size / chunk_size + (input_size % chunk_size != 0 ? 1U : 0U);
     if (count64 > std::numeric_limits<std::size_t>::max())
@@ -138,7 +139,8 @@ WriteStats write_sequential(std::ostream& output, ThreadSafeQueue<Chunk>& result
             stats.bytes += it->second.data.size();
             ++stats.chunks;
             ++expected;
-            pending.erase(it); // Free payload BEFORE making another credit available.
+            if (buffers) buffers->give(std::move(it->second.data));
+            pending.erase(it); // Return storage BEFORE making another credit available.
             window.release();
         }
     }
