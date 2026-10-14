@@ -13,6 +13,7 @@ void usage(std::ostream& out) {
     out << "Usage: filecrypt <encrypt|decrypt> INPUT OUTPUT --key-file FILE\n"
         << "                 [--threads N] [--chunk-size BYTES]\n"
         << "                 [--queue-capacity N] [--max-in-flight N]\n\n"
+        << "                 [--engine pipeline|sequential]\n"
         << "Defaults: hardware threads, 4194304-byte chunks, queues of 8, 16 in flight.\n"
         << "Output must not exist. Both modes apply the same rolling XOR transform.\n"
         << "WARNING: rolling XOR is educational, unauthenticated, and insecure.\n";
@@ -35,7 +36,7 @@ int main(int argc, char** argv) {
         filecrypt::Options options;
         std::filesystem::path key_path;
         bool key_set = false, threads_set = false, chunk_set = false;
-        bool queue_set = false, window_set = false;
+        bool queue_set = false, window_set = false, engine_set = false;
         for (int i = 4; i < argc; i += 2) {
             if (i + 1 >= argc) throw std::invalid_argument("Missing option value");
             const std::string_view name(argv[i]), value(argv[i + 1]);
@@ -51,7 +52,13 @@ int main(int argc, char** argv) {
             else if (name == "--chunk-size") set_number(chunk_set, options.chunk_size);
             else if (name == "--queue-capacity") set_number(queue_set, options.queue_capacity);
             else if (name == "--max-in-flight") set_number(window_set, options.max_in_flight);
-            else throw std::invalid_argument("Unknown option");
+            else if (name == "--engine") {
+                if (engine_set) throw std::invalid_argument("Repeated engine option");
+                engine_set = true;
+                if (value == "sequential") options.engine = filecrypt::Engine::sequential;
+                else if (value == "pipeline") options.engine = filecrypt::Engine::pipeline;
+                else throw std::invalid_argument("Engine must be pipeline or sequential");
+            } else throw std::invalid_argument("Unknown option");
         }
         if (!key_set) throw std::invalid_argument("--key-file is required");
         const filecrypt::RollingXor cipher(filecrypt::read_key(key_path));
@@ -64,7 +71,11 @@ int main(int argc, char** argv) {
                   << " chunks; workers=" << stats.workers
                   << "; peak_in_flight=" << stats.peak_in_flight
                   << "; peak_reordered=" << stats.peak_reordered
-                  << "; seconds=" << std::fixed << std::setprecision(3) << seconds << '\n';
+                  << "; engine=" << (options.engine == filecrypt::Engine::sequential ? "sequential" : "pipeline")
+                  << "; buffer_allocations=" << stats.buffer_allocations
+                  << "; task_push_waits=" << stats.task_queue.push_waits
+                  << "; result_push_waits=" << stats.result_queue.push_waits
+                  << "; seconds=" << std::fixed << std::setprecision(6) << seconds << '\n';
         return 0;
     } catch (const std::invalid_argument& error) {
         std::cerr << "Argument error: " << error.what() << '\n'; return 2;

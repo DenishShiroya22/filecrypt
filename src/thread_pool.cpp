@@ -3,11 +3,12 @@
 #include <utility>
 
 namespace filecrypt {
-ThreadPool::ThreadPool(std::size_t count, Task task, OnError on_error) {
+ThreadPool::ThreadPool(std::size_t count, Task task, OnError on_error, BeforeLaunch before_launch) {
     if (!count) throw std::invalid_argument("Thread count must be positive");
-    threads_.reserve(count);
     try {
+        threads_.reserve(count);
         for (std::size_t i = 0; i < count; ++i) {
+            if (before_launch) before_launch(i);
             threads_.emplace_back([task, on_error] {
                 try { task(); }
                 catch (...) { on_error(std::current_exception()); }

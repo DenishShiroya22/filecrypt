@@ -6,17 +6,24 @@
 #include <fstream>
 
 namespace filecrypt {
+namespace detail { struct RuntimeHooks; }
 class ChunkReader {
 public:
     explicit ChunkReader(const std::filesystem::path& input);
     std::uintmax_t size() const noexcept { return size_; }
-    void produce(std::size_t chunk_size, ThreadSafeQueue<Chunk>& tasks, InFlightWindow& window);
+    std::size_t allocations() const noexcept { return allocations_; }
+    bool read_next(Chunk& chunk, std::size_t chunk_size, detail::RuntimeHooks* hooks = nullptr);
+    void verify_end();
+    void produce(std::size_t chunk_size, ThreadSafeQueue<Chunk>& tasks,
+                 InFlightWindow& window, detail::RuntimeHooks* hooks = nullptr);
 private:
     std::ifstream stream_;
     const std::uintmax_t size_;
+    std::uintmax_t remaining_;
+    std::size_t next_id_{}, allocations_{};
+    bool finished_{false};
 };
-// Writes privately beside the destination. Publication uses an atomic hard-link
-// creation so an existing destination (including a raced creation) is never lost.
+// Private sibling staging and atomic no-overwrite hard-link publication.
 class OutputTransaction {
 public:
     explicit OutputTransaction(const std::filesystem::path& destination);
@@ -35,5 +42,5 @@ struct WriteStats {
 };
 WriteStats write_sequential(std::ostream& output, ThreadSafeQueue<Chunk>& results,
                             InFlightWindow& window, std::uintmax_t input_size,
-                            std::size_t chunk_size);
+                            std::size_t chunk_size, detail::RuntimeHooks* hooks = nullptr);
 } // namespace filecrypt

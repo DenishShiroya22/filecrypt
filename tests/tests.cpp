@@ -1,5 +1,8 @@
 #include "filecrypt/pipeline.hpp"
 #include "filecrypt/thread_pool.hpp"
+#include "filecrypt/detail/runtime_hooks.hpp"
+#include <condition_variable>
+#include <system_error>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -136,8 +139,10 @@ void cipher_offsets() {
             for (const auto& chunk : chunks) combined.insert(combined.end(), chunk.data.begin(), chunk.data.end());
             require(combined == original, "XOR round trip failed");
         }
-        Chunk overflow{std::numeric_limits<std::size_t>::max(), {}, true};
-        throws([&] { cipher.transform(overflow, 2); });
+        if constexpr (std::numeric_limits<std::size_t>::digits >= 64) {
+            Chunk overflow{std::numeric_limits<std::size_t>::max(), {}, true};
+            throws([&] { cipher.transform(overflow, 2); });
+        }
     }
     throws([] { RollingXor invalid({}); });
 }
@@ -219,12 +224,169 @@ void output_transaction() {
     require(std::distance(fs::directory_iterator(temp.path), fs::directory_iterator{}) == 1,
             "Failed publication leaked staging directory");
 }
+void sequential_equivalence() {
+    TempDirectory temp;
+    const auto input = temp.path / "input";
+    const auto data = random_bytes(1024U * 1024U + 19U);
+    save(input, data);
+    RollingXor cipher({0, 1, 255, 32, 9});
+    Options serial{65537, 8, 1, 3, Engine::sequential};
+    const auto stats = process_file(input, temp.path / "serial", cipher, serial);
+    require(stats.workers == 0 && stats.buffer_allocations == 1 &&
+            stats.task_queue.push_waits == 0, "Sequential engine started pipeline resources");
+    process_file(input, temp.path / "parallel", cipher, Options{4096, 4, 1, 3});
+    require(read(temp.path / "serial") == read(temp.path / "parallel"), "Engine output differs");
+    process_file(temp.path / "serial", temp.path / "recovered", cipher,
+                 Options{8191, 1, 1, 1, Engine::sequential});
+    require(read(temp.path / "recovered") == data, "Sequential round trip failed");
+}
+void require_rollback(const TempDirectory& temp, const fs::path& output) {
+    require(!fs::exists(output), "Failed pipeline published output");
+    for (const auto& item : fs::directory_iterator(temp.path))
+        require(item.path().filename().string().find(".filecrypt-") != 0,
+                "Failed pipeline left staging data");
+}
+void launch_failures() {
+    TempDirectory temp;
+    save(temp.path / "input", random_bytes(65536));
+    RollingXor cipher({1,2,3});
+    for (const std::size_t fail_at : {1U, 3U}) {
+        detail::RuntimeHooks hooks;
+        std::size_t attempts = 0;
+        hooks.before_launch = [&](std::size_t index) {
+            ++attempts;
+            if (index == fail_at)
+                throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again),
+                                        "Injected thread launch failure");
+        };
+        bool caught = false;
+        try { detail::process_file_with_hooks(temp.path/"input", temp.path/"output",
+                                             cipher, Options{4096,3,1,4}, hooks); }
+        catch (const std::system_error&) { caught = true; }
+        require(caught && attempts == fail_at+1, "Launch failure did not propagate");
+        require_rollback(temp, temp.path/"output");
+    }
+}
+void allocation_failure() {
+    TempDirectory temp;
+    const auto data = random_bytes(65536);
+    save(temp.path/"input",data);
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool failed = false;
+    detail::RuntimeHooks hooks;
+    hooks.before_transform = [&](std::size_t id) {
+        if (id != 0) return;
+        std::unique_lock<std::mutex> lock(mutex);
+        if (!changed.wait_for(lock, 5s, [&]{ return failed; }))
+            throw std::runtime_error("Allocation failure gate timed out");
+    };
+    hooks.before_allocate = [&](std::size_t id) {
+        if (id != 2) return;
+        { std::lock_guard<std::mutex> lock(mutex); failed = true; }
+        changed.notify_all();
+        throw std::bad_alloc();
+    };
+    bool caught = false;
+    try { detail::process_file_with_hooks(temp.path/"input", temp.path/"output",
+            RollingXor({1,2,3}), Options{1024,2,1,8}, hooks); }
+    catch (const std::bad_alloc&) { caught = true; }
+    require(caught, "Allocation error was replaced or lost");
+    require_rollback(temp,temp.path/"output");
+    require(read(temp.path/"input") == data, "Allocation failure modified input");
+}
+void input_change_failures() {
+    for (const bool grow : {false,true}) {
+        TempDirectory temp;
+        const auto input = temp.path/"input";
+        save(input,random_bytes(65536));
+        detail::RuntimeHooks hooks;
+        hooks.before_read = [&](std::size_t id) {
+            if (id != 1) return;
+            if (grow) { std::ofstream append(input,std::ios::binary|std::ios::app); append.put('x'); }
+            else fs::resize_file(input,0);
+        };
+        bool caught = false;
+        try { detail::process_file_with_hooks(input,temp.path/"output",
+                RollingXor({1,2,3}),Options{1024,2,1,4},hooks); }
+        catch (const std::runtime_error& error) {
+            caught = std::string(error.what()).find(grow ? "grew" : "shrank") != std::string::npos;
+        }
+        require(caught, "Actual truncated/grown input was not rejected");
+        require_rollback(temp,temp.path/"output");
+    }
+}
+void writer_failure() {
+    TempDirectory temp;
+    const auto data = random_bytes(65536);
+    save(temp.path/"input",data);
+    detail::RuntimeHooks hooks;
+    hooks.before_write = [](std::size_t id) {
+        if (id == 2) throw std::runtime_error("Injected write boundary failure");
+    };
+    bool caught = false;
+    try { detail::process_file_with_hooks(temp.path/"input",temp.path/"output",
+            RollingXor({1,2,3}), Options{1024,4,1,8}, hooks); }
+    catch (const std::runtime_error& error) {
+        caught = std::string(error.what()) == "Injected write boundary failure";
+    }
+    require(caught, "Writer failure did not retain original error");
+    require_rollback(temp,temp.path/"output");
+    require(read(temp.path/"input") == data, "Write failure modified input");
+}
+void saturated_cancellation() {
+    TempDirectory temp;
+    const auto data = random_bytes(128U*1024U);
+    save(temp.path/"input",data);
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool writer_blocked=false, task_blocked=false, result_blocked=false;
+    detail::RuntimeHooks hooks;
+    hooks.task_wait = [&](QueueWait wait) noexcept {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (wait == QueueWait::push && writer_blocked) task_blocked = true;
+        changed.notify_all();
+    };
+    hooks.result_wait = [&](QueueWait wait) noexcept {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (wait == QueueWait::push && writer_blocked) result_blocked = true;
+        changed.notify_all();
+    };
+    hooks.before_transform = [&](std::size_t id) {
+        if (!id) return;
+        std::unique_lock<std::mutex> lock(mutex);
+        if (!changed.wait_for(lock,5s,[&]{return writer_blocked;}))
+            throw std::runtime_error("Writer startup gate timed out");
+    };
+    hooks.before_write = [&](std::size_t id) {
+        if (id) return;
+        std::unique_lock<std::mutex> lock(mutex);
+        writer_blocked = true;
+        changed.notify_all();
+        if (!changed.wait_for(lock,5s,[&]{return task_blocked && result_blocked;}))
+            throw std::runtime_error("Queues did not both saturate");
+        throw std::runtime_error("Injected cancellation with both queues full");
+    };
+    bool caught=false;
+    try { detail::process_file_with_hooks(temp.path/"input",temp.path/"output",
+            RollingXor({1,2,3}),Options{1024,2,1,12},hooks); }
+    catch(const std::runtime_error& error) {
+        caught=std::string(error.what())=="Injected cancellation with both queues full";
+    }
+    require(caught && task_blocked && result_blocked,
+            "Failed to cancel a genuinely saturated pipeline");
+    require_rollback(temp,temp.path/"output");
+    require(read(temp.path/"input")==data,"Cancellation modified input");
+}
+
 }
 int main() {
     try {
         queue_shutdown(); queue_contention(); window_cancel(); cipher_offsets();
         ordered_writer(); thread_pool_errors(); pipeline_roundtrip(); output_transaction();
-        std::cout << "All 8 test groups passed\n";
+        sequential_equivalence(); launch_failures(); allocation_failure();
+        input_change_failures(); writer_failure(); saturated_cancellation();
+        std::cout << "All 14 test groups passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "Test failure: " << error.what() << '\n'; return 1;

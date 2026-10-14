@@ -1,6 +1,6 @@
 #include "filecrypt/file_io.hpp"
 #include <algorithm>
-#include <chrono>
+#include "filecrypt/detail/runtime_hooks.hpp"
 #include <limits>
 #include <random>
 #include <stdexcept>
@@ -18,31 +18,44 @@ std::uintmax_t regular_file_size(const fs::path& path) {
 }
 }
 ChunkReader::ChunkReader(const fs::path& input)
-    : stream_(input, std::ios::binary), size_(regular_file_size(input)) {
+    : stream_(input, std::ios::binary), size_(regular_file_size(input)), remaining_(size_) {
     if (!stream_) throw std::runtime_error("Cannot open input file");
 }
-void ChunkReader::produce(std::size_t chunk_size, ThreadSafeQueue<Chunk>& tasks,
-                          InFlightWindow& window) {
-    std::uintmax_t remaining = size_;
-    std::size_t id = 0;
-    // Empty files still carry a single terminal chunk, keeping EOF explicit.
-    do {
-        if (!window.acquire()) return;
-        const auto bytes = static_cast<std::size_t>(
-            std::min<std::uintmax_t>(remaining, chunk_size));
-        Chunk chunk{id, std::vector<std::uint8_t>(bytes), remaining <= chunk_size};
-        if (bytes) {
-            stream_.read(reinterpret_cast<char*>(chunk.data.data()),
-                         static_cast<std::streamsize>(bytes));
-            if (stream_.gcount() != static_cast<std::streamsize>(bytes) || stream_.bad())
-                throw std::runtime_error("Read failed or input shrank during processing");
-        }
-        remaining -= bytes;
-        if (!tasks.push(std::move(chunk))) return;
-        if (remaining) ++id;
-    } while (remaining);
+bool ChunkReader::read_next(Chunk& chunk, std::size_t chunk_size, detail::RuntimeHooks* hooks) {
+    if (finished_) return false;
+    const auto bytes = static_cast<std::size_t>(std::min<std::uintmax_t>(remaining_, chunk_size));
+    chunk.chunk_id = next_id_;
+    chunk.is_last = remaining_ <= chunk_size;
+    if (hooks && hooks->before_read) hooks->before_read(next_id_);
+    const bool grows = chunk.data.capacity() < bytes;
+    if (grows && hooks && hooks->before_allocate) hooks->before_allocate(next_id_);
+    chunk.data.resize(bytes);
+    if (grows) ++allocations_;
+    if (bytes) {
+        stream_.read(reinterpret_cast<char*>(chunk.data.data()), static_cast<std::streamsize>(bytes));
+        if (stream_.gcount() != static_cast<std::streamsize>(bytes) || stream_.bad())
+            throw std::runtime_error("Read failed or input shrank during processing");
+    }
+    remaining_ -= bytes;
+    finished_ = chunk.is_last;
+    if (!finished_) ++next_id_;
+    return true;
+}
+void ChunkReader::verify_end() {
+    if (!finished_) throw std::runtime_error("Input was not completely read");
     if (stream_.peek() != std::char_traits<char>::eof() || stream_.bad())
         throw std::runtime_error("Read failed or input grew during processing");
+}
+void ChunkReader::produce(std::size_t chunk_size, ThreadSafeQueue<Chunk>& tasks,
+                          InFlightWindow& window, detail::RuntimeHooks* hooks) {
+    // Even an empty file emits one terminal chunk.
+    while (!finished_) {
+        if (!window.acquire()) return;
+        Chunk chunk;
+        read_next(chunk, chunk_size, hooks);
+        if (!tasks.push(std::move(chunk))) return;
+    }
+    verify_end();
     tasks.shutdown();
 }
 OutputTransaction::OutputTransaction(const fs::path& destination)
@@ -92,7 +105,7 @@ void OutputTransaction::commit() {
 }
 WriteStats write_sequential(std::ostream& output, ThreadSafeQueue<Chunk>& results,
                             InFlightWindow& window, std::uintmax_t input_size,
-                            std::size_t chunk_size) {
+                            std::size_t chunk_size, detail::RuntimeHooks* hooks) {
     const std::uintmax_t count64 = input_size == 0 ? 1 :
         input_size / chunk_size + (input_size % chunk_size != 0 ? 1U : 0U);
     if (count64 > std::numeric_limits<std::size_t>::max())
@@ -116,6 +129,7 @@ WriteStats write_sequential(std::ostream& output, ThreadSafeQueue<Chunk>& result
         for (;;) {
             auto it = pending.find(expected);
             if (it == pending.end()) break;
+            if (hooks && hooks->before_write) hooks->before_write(expected);
             if (!it->second.data.empty()) {
                 output.write(reinterpret_cast<const char*>(it->second.data.data()),
                              static_cast<std::streamsize>(it->second.data.size()));

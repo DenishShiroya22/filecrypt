@@ -12,7 +12,8 @@ class ThreadPool {
 public:
     using Task = std::function<void()>;
     using OnError = std::function<void(std::exception_ptr)>;
-    ThreadPool(std::size_t count, Task task, OnError on_error);
+    using BeforeLaunch = std::function<void(std::size_t)>;
+    ThreadPool(std::size_t count, Task task, OnError on_error, BeforeLaunch before_launch = {});
     ~ThreadPool();
     ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;
