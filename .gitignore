@@ -1,0 +1,7 @@
+/build*/
+/out/
+/test-artifacts/
+*.key
+*.enc
+*.dec
+.filecrypt-*
